@@ -317,7 +317,7 @@ function getCFOScoreInsight(cashNow, totalIn, totalOut, goals, liquidPortNow, sc
 }
 
 
-function buildSystemPrompt(data) {
+function buildSystemPrompt(data, marketData) {
   const { baseCurrency, displayCurrency = 'USD', displaySecondaryCurrency = 'AED', accounts, portfolio, goals, recurringItems, snapshots, lifeLog, fxRates } = data;
   const sorted = [...snapshots].sort((a, b) => a.date.localeCompare(b.date));
   const latest = sorted[sorted.length - 1];
@@ -496,6 +496,36 @@ function buildSystemPrompt(data) {
     lines.push(`The shaded range is a general margin of uncertainty around the estimate, not a specific scenario — it starts at 0% today and widens evenly to ±15% by year 5, reflecting that longer-range projections are inherently less certain. It is not a statistical confidence interval and not tied to any specific best/worst-case assumption.`);
     lines.push(`In 5 years this projects to roughly ${fmt(final.mid, baseCurrency)} (estimate), with a shown range of roughly ${fmt(final.lower, baseCurrency)} to ${fmt(final.upper, baseCurrency)}.`);
     lines.push(`When asked about this chart, be direct about its limits: it assumes steady, uninterrupted growth in income, spending, and markets, which real life rarely delivers — job changes, market drawdowns, one-off expenses, or life events (a move, a career gap) would all knock it off track. A large share of the total may be illiquid (property/pension) — it's growing at an assumed 5%/year in this projection, but that's a single blended guess covering very different assets (e.g. property price growth vs invested pension returns), so it's worth pointing out if the user's illiquid mix is heavily weighted one way. It's a planning estimate, not a forecast or guarantee. If the user's situation includes anything you already know that would materially affect this (e.g. a known income gap, a big planned expense), point that out specifically rather than giving a generic disclaimer.`);
+  }
+
+  // Market context — VIX, gold, put/call ratio, shown as small chips in the
+  // dashboard header. Shared across all users (public market data, not
+  // personal), logged once daily by a background job. Gives the CFO a real
+  // multi-day trend to reference, not just today's snapshot.
+  if (marketData && marketData.history && marketData.history.length > 0) {
+    const h = marketData.history;
+    const trendFor = (key) => {
+      const vals = h.map((d) => d[key]).filter((v) => v !== null && v !== undefined);
+      if (vals.length < 2) return null;
+      const first = vals[0], last = vals[vals.length - 1];
+      const min = Math.min(...vals), max = Math.max(...vals);
+      const pctChange = first !== 0 ? (((last - first) / first) * 100).toFixed(1) : null;
+      return { first, last, min, max, days: vals.length, pctChange };
+    };
+    const vixTrend = trendFor('vix');
+    const goldTrend = trendFor('gold');
+    const pcTrend = trendFor('put_call');
+
+    lines.push('');
+    lines.push('=== MARKET CONTEXT (dashboard header chips, shared across all users) ===');
+    lines.push(`This is general market data, not personalised to the user, shown as three small indicators in the dashboard header: VIX (volatility/fear index), gold spot price (USD), and the CBOE put/call ratio (options sentiment). Each is logged once daily.`);
+    if (marketData.vix) lines.push(`VIX right now: ${marketData.vix.value.toFixed(1)}, ${marketData.vix.up ? 'up' : 'down'} vs the previous close.`);
+    if (marketData.gold) lines.push(`Gold right now: $${Math.round(marketData.gold.value).toLocaleString()}, live spot price.`);
+    if (marketData.putCall) lines.push(`Put/call ratio right now: ${marketData.putCall.value.toFixed(2)}, ${marketData.putCall.up ? 'up' : 'down'} vs the previous session.`);
+    if (vixTrend) lines.push(`VIX trend over the last ${vixTrend.days} logged days: moved from ${vixTrend.first.toFixed(1)} to ${vixTrend.last.toFixed(1)} (${vixTrend.pctChange > 0 ? '+' : ''}${vixTrend.pctChange}%), ranging ${vixTrend.min.toFixed(1)}–${vixTrend.max.toFixed(1)}. Rising VIX = more fear/uncertainty; falling = calmer markets.`);
+    if (goldTrend) lines.push(`Gold trend over the last ${goldTrend.days} logged days: moved from $${Math.round(goldTrend.first).toLocaleString()} to $${Math.round(goldTrend.last).toLocaleString()} (${goldTrend.pctChange > 0 ? '+' : ''}${goldTrend.pctChange}%), ranging $${Math.round(goldTrend.min).toLocaleString()}–$${Math.round(goldTrend.max).toLocaleString()}.`);
+    if (pcTrend) lines.push(`Put/call ratio trend over the last ${pcTrend.days} logged days: moved from ${pcTrend.first.toFixed(2)} to ${pcTrend.last.toFixed(2)} (${pcTrend.pctChange > 0 ? '+' : ''}${pcTrend.pctChange}%). Rising ratio = more bearish positioning; falling = more bullish.`);
+    lines.push(`Use this as background colour when it's genuinely relevant (e.g. the user asks about markets, volatility, or timing an investment decision) — don't force it into unrelated conversations, and never use it to give specific trading or market-timing advice. This is context, not a signal to act on.`);
   }
 
   return lines.join('\n');
@@ -915,14 +945,14 @@ export default function App() {
   // direction is derived by comparing against the last price this browser
   // saw (stored in localStorage) — meaning the very first load on a given
   // device won't show a gold arrow yet, and this doesn't sync across devices.
-  const [marketData, setMarketData] = useState({ vix: null, gold: null, putCall: null });
+  const [marketData, setMarketData] = useState({ vix: null, gold: null, putCall: null, history: null });
   useEffect(() => {
     if (!data || !data.disclaimerAccepted) return;
 
     (async () => {
-      // VIX + Put/Call ratio — via our own /api/market-data proxy, since
-      // CBOE's CDN doesn't allow direct browser requests (confirmed: both
-      // chips silently failed to appear when fetched directly).
+      // VIX + Put/Call ratio + 30-day history — via our own /api/market-data
+      // proxy, since CBOE's CDN doesn't allow direct browser requests
+      // (confirmed: both chips silently failed to appear when fetched directly).
       try {
         const res = await fetch('/api/market-data');
         const json = await res.json();
@@ -930,6 +960,7 @@ export default function App() {
           ...d,
           vix: json.vix || d.vix,
           putCall: json.putCall || d.putCall,
+          history: json.history || d.history,
         }));
       } catch (e) { /* chips just won't show */ }
 
@@ -1605,7 +1636,7 @@ export default function App() {
           max_tokens: 1000,
           stream: true,
           tools: [LIFE_LOG_TOOL],
-          system: [{ type: 'text', text: buildSystemPrompt(data), cache_control: { type: 'ephemeral' } }],
+          system: [{ type: 'text', text: buildSystemPrompt(data, marketData), cache_control: { type: 'ephemeral' } }],
           messages: apiMessages.map((m) => ({ role: m.role, content: m.content })),
           user_id: session.user.id,
         }),
@@ -1714,7 +1745,7 @@ export default function App() {
             max_tokens: 300,
             stream: false,
             tools: [LIFE_LOG_TOOL],
-            system: [{ type: 'text', text: buildSystemPrompt(data), cache_control: { type: 'ephemeral' } }],
+            system: [{ type: 'text', text: buildSystemPrompt(data, marketData), cache_control: { type: 'ephemeral' } }],
             messages: [
               ...apiMessages.map((m) => ({ role: m.role, content: m.content })),
               assistantToolMsg,

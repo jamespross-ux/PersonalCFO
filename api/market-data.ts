@@ -1,22 +1,29 @@
 // Vercel Edge Function: /api/market-data
-// Proxies VIX and put/call ratio from CBOE's CSV feeds. These are fetched
-// server-side and parsed here, then returned as clean JSON, because CBOE's
-// CDN does not allow direct browser-to-CBOE requests (no CORS headers) —
-// confirmed by the chips silently not appearing when fetched directly from
-// the browser. No API key needed for either source; both are public data.
+// Proxies VIX and put/call ratio from CBOE's CSV feeds (CBOE's CDN blocks
+// direct browser requests — confirmed by testing). Also returns the last 30
+// days of history from the shared market_history table (populated daily by
+// /api/log-market-history), so the CFO chat can describe a genuine trend
+// rather than just today's snapshot.
 //
-// Gold is NOT proxied here — gold-api.com already works fine as a direct
-// browser fetch (CORS enabled on their side), so it stays as-is in App.tsx.
+// Gold is NOT proxied here for its CURRENT value — gold-api.com already
+// works fine as a direct browser fetch. Gold's HISTORY does come from here
+// though, since gold-api.com's free tier has no confirmed historical
+// endpoint — our own daily-logged history covers that gap.
 //
-// Fails gracefully per-indicator: if one source's fetch or parsing fails,
-// that key is simply omitted from the response rather than erroring the
-// whole request, so the dashboard can still show whichever indicators did
-// succeed.
+// Set these in Vercel Project Settings -> Environment Variables:
+//   SUPABASE_URL              (already set for chat.ts)
+//   SUPABASE_SERVICE_ROLE_KEY (already set for chat.ts)
 
 export const config = { runtime: 'edge' };
 
+const HISTORY_DAYS = 30;
+
 export default async function handler(): Promise<Response> {
-  const result: { vix?: { value: number; up: boolean }; putCall?: { value: number; up: boolean } } = {};
+  const result: {
+    vix?: { value: number; up: boolean };
+    putCall?: { value: number; up: boolean };
+    history?: { date: string; vix: number | null; gold: number | null; put_call: number | null }[];
+  } = {};
 
   // VIX — standard CBOE format: DATE,OPEN,HIGH,LOW,CLOSE
   try {
@@ -29,12 +36,9 @@ export default async function handler(): Promise<Response> {
     if (Number.isFinite(last) && Number.isFinite(prev)) {
       result.vix = { value: last, up: last > prev };
     }
-  } catch (e) {
-    // omit vix from the response
-  }
+  } catch (e) { /* omit */ }
 
-  // Put/Call ratio — a couple of header/description lines before the real
-  // CSV header ("Trade_date,Call,Put,Total,P/C Ratio").
+  // Put/Call ratio
   try {
     const res = await fetch('https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/indexpcarchive.csv');
     const text = await res.text();
@@ -49,17 +53,28 @@ export default async function handler(): Promise<Response> {
         result.putCall = { value: last, up: last > prev };
       }
     }
-  } catch (e) {
-    // omit putCall from the response
-  }
+  } catch (e) { /* omit */ }
+
+  // 30-day history from our own shared table (needs Supabase — separate
+  // try/catch so a Supabase hiccup doesn't take down the live VIX/P-C chips
+  // above, which don't depend on it).
+  try {
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (supabaseUrl && serviceKey) {
+      const cutoff = new Date(Date.now() - HISTORY_DAYS * 86400000).toISOString().slice(0, 10);
+      const res = await fetch(
+        `${supabaseUrl}/rest/v1/market_history?date=gte.${cutoff}&order=date.asc&select=date,vix,gold,put_call`,
+        { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` } }
+      );
+      if (res.ok) result.history = await res.json();
+    }
+  } catch (e) { /* omit */ }
 
   return new Response(JSON.stringify(result), {
     status: 200,
     headers: {
       'Content-Type': 'application/json',
-      // Cache for 30 minutes at the edge — this data only updates once a
-      // day at CBOE's end, so no need to hit their servers on every single
-      // dashboard load from every user.
       'Cache-Control': 'public, max-age=0, s-maxage=1800',
     },
   });

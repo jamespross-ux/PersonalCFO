@@ -22,6 +22,10 @@
     {
       "path": "/api/check-inactive",
       "schedule": "0 8 * * 1"
+    },
+    {
+      "path": "/api/log-market-history",
+      "schedule": "0 22 * * *"
     }
   ]
 }
