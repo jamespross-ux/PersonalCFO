@@ -502,29 +502,35 @@ function buildSystemPrompt(data, marketData) {
   // dashboard header. Shared across all users (public market data, not
   // personal), logged once daily by a background job. Gives the CFO a real
   // multi-day trend to reference, not just today's snapshot.
-  if (marketData && marketData.history && marketData.history.length > 0) {
-    const h = marketData.history;
-    const trendFor = (key) => {
-      const vals = h.map((d) => d[key]).filter((v) => v !== null && v !== undefined);
-      if (vals.length < 2) return null;
-      const first = vals[0], last = vals[vals.length - 1];
-      const min = Math.min(...vals), max = Math.max(...vals);
-      const pctChange = first !== 0 ? (((last - first) / first) * 100).toFixed(1) : null;
-      return { first, last, min, max, days: vals.length, pctChange };
-    };
-    const vixTrend = trendFor('vix');
-    const goldTrend = trendFor('gold');
-    const pcTrend = trendFor('put_call');
-
+  const hasCurrentMarketData = marketData && (marketData.vix || marketData.gold || marketData.putCall);
+  const hasHistory = marketData && marketData.history && marketData.history.length > 0;
+  if (hasCurrentMarketData || hasHistory) {
     lines.push('');
     lines.push('=== MARKET CONTEXT (dashboard header chips, shared across all users) ===');
     lines.push(`This is general market data, not personalised to the user, shown as three small indicators in the dashboard header: VIX (volatility/fear index), gold spot price (USD), and the CBOE put/call ratio (options sentiment). Each is logged once daily.`);
     if (marketData.vix) lines.push(`VIX right now: ${marketData.vix.value.toFixed(1)}, ${marketData.vix.up ? 'up' : 'down'} vs the previous close.`);
     if (marketData.gold) lines.push(`Gold right now: $${Math.round(marketData.gold.value).toLocaleString()}, live spot price.`);
     if (marketData.putCall) lines.push(`Put/call ratio right now: ${marketData.putCall.value.toFixed(2)}, ${marketData.putCall.up ? 'up' : 'down'} vs the previous session.`);
-    if (vixTrend) lines.push(`VIX trend over the last ${vixTrend.days} logged days: moved from ${vixTrend.first.toFixed(1)} to ${vixTrend.last.toFixed(1)} (${vixTrend.pctChange > 0 ? '+' : ''}${vixTrend.pctChange}%), ranging ${vixTrend.min.toFixed(1)}–${vixTrend.max.toFixed(1)}. Rising VIX = more fear/uncertainty; falling = calmer markets.`);
-    if (goldTrend) lines.push(`Gold trend over the last ${goldTrend.days} logged days: moved from $${Math.round(goldTrend.first).toLocaleString()} to $${Math.round(goldTrend.last).toLocaleString()} (${goldTrend.pctChange > 0 ? '+' : ''}${goldTrend.pctChange}%), ranging $${Math.round(goldTrend.min).toLocaleString()}–$${Math.round(goldTrend.max).toLocaleString()}.`);
-    if (pcTrend) lines.push(`Put/call ratio trend over the last ${pcTrend.days} logged days: moved from ${pcTrend.first.toFixed(2)} to ${pcTrend.last.toFixed(2)} (${pcTrend.pctChange > 0 ? '+' : ''}${pcTrend.pctChange}%). Rising ratio = more bearish positioning; falling = more bullish.`);
+
+    if (hasHistory) {
+      const h = marketData.history;
+      const trendFor = (key) => {
+        const vals = h.map((d) => d[key]).filter((v) => v !== null && v !== undefined);
+        if (vals.length < 2) return null;
+        const first = vals[0], last = vals[vals.length - 1];
+        const min = Math.min(...vals), max = Math.max(...vals);
+        const pctChange = first !== 0 ? (((last - first) / first) * 100).toFixed(1) : null;
+        return { first, last, min, max, days: vals.length, pctChange };
+      };
+      const vixTrend = trendFor('vix');
+      const goldTrend = trendFor('gold');
+      const pcTrend = trendFor('put_call');
+      if (vixTrend) lines.push(`VIX trend over the last ${vixTrend.days} logged days: moved from ${vixTrend.first.toFixed(1)} to ${vixTrend.last.toFixed(1)} (${vixTrend.pctChange > 0 ? '+' : ''}${vixTrend.pctChange}%), ranging ${vixTrend.min.toFixed(1)}–${vixTrend.max.toFixed(1)}. Rising VIX = more fear/uncertainty; falling = calmer markets.`);
+      if (goldTrend) lines.push(`Gold trend over the last ${goldTrend.days} logged days: moved from $${Math.round(goldTrend.first).toLocaleString()} to $${Math.round(goldTrend.last).toLocaleString()} (${goldTrend.pctChange > 0 ? '+' : ''}${goldTrend.pctChange}%), ranging $${Math.round(goldTrend.min).toLocaleString()}–$${Math.round(goldTrend.max).toLocaleString()}.`);
+      if (pcTrend) lines.push(`Put/call ratio trend over the last ${pcTrend.days} logged days: moved from ${pcTrend.first.toFixed(2)} to ${pcTrend.last.toFixed(2)} (${pcTrend.pctChange > 0 ? '+' : ''}${pcTrend.pctChange}%). Rising ratio = more bearish positioning; falling = more bullish.`);
+    } else {
+      lines.push(`No multi-day trend history logged yet — only today's snapshot is available so far. This will fill in day by day.`);
+    }
     lines.push(`Use this as background colour when it's genuinely relevant (e.g. the user asks about markets, volatility, or timing an investment decision) — don't force it into unrelated conversations, and never use it to give specific trading or market-timing advice. This is context, not a signal to act on.`);
   }
 
