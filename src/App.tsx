@@ -898,6 +898,77 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.lastFxAutoRefresh, data?.disclaimerAccepted]);
 
+  // ── Market indicators (VIX, gold, put/call ratio) ──────────────────────────
+  // Purely decorative context in the hero header — fetched fresh on every page
+  // load (not cached like FX rates), directly from the browser, no API keys
+  // and no server proxy needed since all three sources are public/free.
+  // Deliberately fails silently and per-indicator: if any one source is
+  // unreachable, blocked, or its format has changed, that specific chip just
+  // doesn't render rather than breaking the dashboard.
+  //
+  // Colour meaning is sentiment-based, not raw direction, for VIX and the
+  // put/call ratio (a rising VIX or rising P/C ratio is bearish = red; falling
+  // is bullish = green). Gold is plain price direction (up = green, down = red)
+  // since it isn't a sentiment index.
+  //
+  // Gold has no "yesterday's close" in the free live-price endpoint, so its
+  // direction is derived by comparing against the last price this browser
+  // saw (stored in localStorage) — meaning the very first load on a given
+  // device won't show a gold arrow yet, and this doesn't sync across devices.
+  const [marketData, setMarketData] = useState({ vix: null, gold: null, putCall: null });
+  useEffect(() => {
+    if (!data || !data.disclaimerAccepted) return;
+
+    (async () => {
+      // VIX — standard CBOE format: DATE,OPEN,HIGH,LOW,CLOSE
+      try {
+        const res = await fetch('https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv');
+        const text = await res.text();
+        const rows = text.trim().split('\n').slice(1).filter(Boolean);
+        const parseClose = (row) => parseFloat(row.split(',')[4]);
+        const last = parseClose(rows[rows.length - 1]);
+        const prev = parseClose(rows[rows.length - 2]);
+        if (Number.isFinite(last) && Number.isFinite(prev)) {
+          setMarketData((d) => ({ ...d, vix: { value: last, up: last > prev } }));
+        }
+      } catch (e) { /* chip just won't show */ }
+
+      // Put/Call ratio — file has a couple of header/description lines before
+      // the real CSV header ("Trade_date,Call,Put,Total,P/C Ratio").
+      try {
+        const res = await fetch('https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/indexpcarchive.csv');
+        const text = await res.text();
+        const lines = text.trim().split('\n');
+        const headerIdx = lines.findIndex((l) => l.startsWith('Trade_date'));
+        if (headerIdx >= 0) {
+          const rows = lines.slice(headerIdx + 1).filter(Boolean);
+          const parseRatio = (row) => parseFloat(row.split(',')[4]);
+          const last = parseRatio(rows[rows.length - 1]);
+          const prev = parseRatio(rows[rows.length - 2]);
+          if (Number.isFinite(last) && Number.isFinite(prev)) {
+            setMarketData((d) => ({ ...d, putCall: { value: last, up: last > prev } }));
+          }
+        }
+      } catch (e) { /* chip just won't show */ }
+
+      // Gold — free live price, no key. Response field name is a best-effort
+      // guess (checks a few likely names) since this couldn't be verified
+      // ahead of time; if the real shape differs, this chip just won't show
+      // until confirmed and adjusted.
+      try {
+        const res = await fetch('https://api.gold-api.com/price/XAU');
+        const json = await res.json();
+        const price = Number(json.price ?? json.price_usd ?? json.value ?? json.rate);
+        if (Number.isFinite(price)) {
+          const prevPrice = parseFloat(localStorage.getItem('hayacfo_last_gold_price'));
+          const up = Number.isFinite(prevPrice) ? price > prevPrice : null;
+          localStorage.setItem('hayacfo_last_gold_price', String(price));
+          setMarketData((d) => ({ ...d, gold: { value: price, up } }));
+        }
+      } catch (e) { /* chip just won't show */ }
+    })();
+  }, [data?.disclaimerAccepted]);
+
   // Login streak — counts distinct calendar days the app was opened (not strictly
   // consecutive sessions within a day, just whether a new day has occurred since
   // the last visit). Resets to 1 if a day is missed; tracks longest streak too.
@@ -1794,8 +1865,51 @@ export default function App() {
         </div>
 
         <div style={{ filter: showFigures ? 'none' : 'blur(8px)', userSelect: showFigures ? 'auto' : 'none', transition: 'filter 0.2s' }}>
-          <div className="masthead-label">Your liquid net worth</div>
-          <div className="masthead-hero">{fmtD(liquidNwNow)}</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="masthead-label">Your liquid net worth</div>
+              <div className="masthead-hero">{fmtD(liquidNwNow)}</div>
+            </div>
+            {(marketData.vix || marketData.gold || marketData.putCall) && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
+                {marketData.vix && (
+                  <div className="market-chip">
+                    <span className="market-chip-label">VIX</span>
+                    <span className="market-chip-val">
+                      {marketData.vix.value.toFixed(1)}{' '}
+                      <span className={marketData.vix.up ? 'market-chip-bad' : 'market-chip-good'}>
+                        {marketData.vix.up ? '▲' : '▼'}
+                      </span>
+                    </span>
+                  </div>
+                )}
+                {marketData.gold && (
+                  <div className="market-chip">
+                    <span className="market-chip-label">GOLD</span>
+                    <span className="market-chip-val">
+                      ${Math.round(marketData.gold.value).toLocaleString()}{' '}
+                      {marketData.gold.up !== null && (
+                        <span className={marketData.gold.up ? 'market-chip-good' : 'market-chip-bad'}>
+                          {marketData.gold.up ? '▲' : '▼'}
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                )}
+                {marketData.putCall && (
+                  <div className="market-chip">
+                    <span className="market-chip-label">P/C</span>
+                    <span className="market-chip-val">
+                      {marketData.putCall.value.toFixed(2)}{' '}
+                      <span className={marketData.putCall.up ? 'market-chip-bad' : 'market-chip-good'}>
+                        {marketData.putCall.up ? '▲' : '▼'}
+                      </span>
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
           <div className="masthead-sub-row">
             {showSecondaryCurrency && <span className="masthead-secondary">{fmt(liquidNwNow, baseCurrency)}</span>}
             {delta !== null && (
@@ -2622,6 +2736,31 @@ const baseCSS = `
   cursor: pointer;
 }
 .masthead-eye-btn:hover { background: rgba(255,255,255,0.14); }
+.market-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 8px;
+  padding: 4px 9px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  min-width: 96px;
+  white-space: nowrap;
+}
+.market-chip-label {
+  color: rgba(247,243,234,0.5);
+  letter-spacing: 0.04em;
+}
+.market-chip-val {
+  color: #EDE8DF;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.market-chip-good { color: #5E8C7C; }
+.market-chip-bad { color: #BD5B3A; }
 .masthead-label {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 10px;
