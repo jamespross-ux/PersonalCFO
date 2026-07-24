@@ -920,41 +920,21 @@ export default function App() {
     if (!data || !data.disclaimerAccepted) return;
 
     (async () => {
-      // VIX — standard CBOE format: DATE,OPEN,HIGH,LOW,CLOSE
+      // VIX + Put/Call ratio — via our own /api/market-data proxy, since
+      // CBOE's CDN doesn't allow direct browser requests (confirmed: both
+      // chips silently failed to appear when fetched directly).
       try {
-        const res = await fetch('https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv');
-        const text = await res.text();
-        const rows = text.trim().split('\n').slice(1).filter(Boolean);
-        const parseClose = (row) => parseFloat(row.split(',')[4]);
-        const last = parseClose(rows[rows.length - 1]);
-        const prev = parseClose(rows[rows.length - 2]);
-        if (Number.isFinite(last) && Number.isFinite(prev)) {
-          setMarketData((d) => ({ ...d, vix: { value: last, up: last > prev } }));
-        }
-      } catch (e) { /* chip just won't show */ }
+        const res = await fetch('/api/market-data');
+        const json = await res.json();
+        setMarketData((d) => ({
+          ...d,
+          vix: json.vix || d.vix,
+          putCall: json.putCall || d.putCall,
+        }));
+      } catch (e) { /* chips just won't show */ }
 
-      // Put/Call ratio — file has a couple of header/description lines before
-      // the real CSV header ("Trade_date,Call,Put,Total,P/C Ratio").
-      try {
-        const res = await fetch('https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/indexpcarchive.csv');
-        const text = await res.text();
-        const lines = text.trim().split('\n');
-        const headerIdx = lines.findIndex((l) => l.startsWith('Trade_date'));
-        if (headerIdx >= 0) {
-          const rows = lines.slice(headerIdx + 1).filter(Boolean);
-          const parseRatio = (row) => parseFloat(row.split(',')[4]);
-          const last = parseRatio(rows[rows.length - 1]);
-          const prev = parseRatio(rows[rows.length - 2]);
-          if (Number.isFinite(last) && Number.isFinite(prev)) {
-            setMarketData((d) => ({ ...d, putCall: { value: last, up: last > prev } }));
-          }
-        }
-      } catch (e) { /* chip just won't show */ }
-
-      // Gold — free live price, no key. Response field name is a best-effort
-      // guess (checks a few likely names) since this couldn't be verified
-      // ahead of time; if the real shape differs, this chip just won't show
-      // until confirmed and adjusted.
+      // Gold — free live price, no key, CORS-enabled so this one works fine
+      // as a direct browser fetch (confirmed live).
       try {
         const res = await fetch('https://api.gold-api.com/price/XAU');
         const json = await res.json();
