@@ -2577,8 +2577,8 @@ const baseCSS = `
 .masthead {
   background: #101C2E;
   color: #F7F3EA;
-  padding: 20px 20px 16px;
-  padding-top: max(16px, env(safe-area-inset-top, 16px) + 4px);
+  padding: 16px 20px 16px;
+  padding-top: max(12px, env(safe-area-inset-top, 12px));
 }
 .masthead-eyebrow {
   display: flex;
@@ -2590,7 +2590,7 @@ const baseCSS = `
   letter-spacing: -0.3px;
   text-transform: none;
   color: #F7F3EA;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 .streak-badge {
   font-size: 11px;
@@ -2760,7 +2760,7 @@ const baseCSS = `
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-top: 4px;
+  margin-top: 10px;
   margin-bottom: 16px;
   flex-wrap: wrap;
 }
