@@ -953,26 +953,42 @@ export default function App() {
       // VIX + Put/Call ratio + 30-day history — via our own /api/market-data
       // proxy, since CBOE's CDN doesn't allow direct browser requests
       // (confirmed: both chips silently failed to appear when fetched directly).
+      let history = null;
       try {
         const res = await fetch('/api/market-data');
         const json = await res.json();
+        history = json.history || null;
         setMarketData((d) => ({
           ...d,
           vix: json.vix || d.vix,
           putCall: json.putCall || d.putCall,
-          history: json.history || d.history,
+          history: history || d.history,
         }));
       } catch (e) { /* chips just won't show */ }
 
       // Gold — free live price, no key, CORS-enabled so this one works fine
-      // as a direct browser fetch (confirmed live).
+      // as a direct browser fetch (confirmed live). Direction is compared
+      // against YESTERDAY'S LOGGED CLOSE from market_history (same stable
+      // "previous close" comparison VIX/P-C already use) — not against
+      // whatever price this browser happened to last see, which was noisy
+      // and could flip several times a day for no meaningful reason.
       try {
         const res = await fetch('https://api.gold-api.com/price/XAU');
         const json = await res.json();
         const price = Number(json.price ?? json.price_usd ?? json.value ?? json.rate);
         if (Number.isFinite(price)) {
-          const prevPrice = parseFloat(localStorage.getItem('hayacfo_last_gold_price'));
-          const up = Number.isFinite(prevPrice) ? price > prevPrice : null;
+          const today = new Date().toISOString().slice(0, 10);
+          const priorEntries = (history || []).filter((h) => h.date < today && h.gold !== null && h.gold !== undefined);
+          const yesterdayClose = priorEntries.length ? priorEntries[priorEntries.length - 1].gold : null;
+          let up = null;
+          if (yesterdayClose !== null) {
+            up = price > yesterdayClose;
+          } else {
+            // Fallback for before any history has been logged yet (e.g. the
+            // very first day) — better than no comparison at all.
+            const prevPrice = parseFloat(localStorage.getItem('hayacfo_last_gold_price'));
+            if (Number.isFinite(prevPrice)) up = price > prevPrice;
+          }
           localStorage.setItem('hayacfo_last_gold_price', String(price));
           setMarketData((d) => ({ ...d, gold: { value: price, up } }));
         }
