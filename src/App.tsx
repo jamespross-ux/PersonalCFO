@@ -2751,7 +2751,7 @@ const baseCSS = `
 }
 .masthead-hero {
   font-family: 'IBM Plex Serif', serif;
-  font-size: 44px;
+  font-size: 48px;
   font-weight: 600;
   line-height: 1.1;
   letter-spacing: -0.5px;
