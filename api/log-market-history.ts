@@ -5,10 +5,16 @@
 // trend, not just today's snapshot.
 //
 // S&P 500 source: FRED (Federal Reserve Bank of St. Louis), an official,
-// free, no-key CSV feed — NOT Stooq. Stooq was tried first but silently
-// failed in production; Stooq is known to block automated/server-side
-// requests (CAPTCHA protection), which is very likely what happened. FRED
-// is built for exactly this kind of automated use.
+// free, no-key CSV feed — NOT Stooq. Stooq was tried first (two different
+// symbols) and both silently failed; Stooq is known to block automated/
+// server-side requests. FRED is built for exactly this kind of use.
+//
+// IMPORTANT — every fetch now has an explicit timeout (8 seconds each). A
+// previous version had no timeout at all, and one hanging request (likely
+// the FRED fetch) blocked the ENTIRE function until Vercel's own 25s limit
+// killed it — meaning even VIX and Gold, which were working fine on their
+// own, never got logged that day either. Each source now fails fast and
+// independently instead.
 //
 // Upserts by date (on_conflict=date), so if this ever runs twice in one day
 // (e.g. a manual test trigger), it safely overwrites today's row rather
@@ -27,6 +33,18 @@
 
 export const config = { runtime: 'edge' };
 
+const FETCH_TIMEOUT_MS = 8000;
+
+async function fetchWithTimeout(url: string, timeoutMs = FETCH_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export default async function handler(req: Request): Promise<Response> {
   const authHeader = req.headers.get('authorization');
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
@@ -43,43 +61,48 @@ export default async function handler(req: Request): Promise<Response> {
   const row: { date: string; vix?: number; gold?: number; sp500?: number } = { date: today };
   const fetchErrors: Record<string, string> = {};
 
-  // VIX
-  try {
-    const res = await fetch('https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv');
-    const text = await res.text();
-    const rows = text.trim().split('\n').slice(1).filter(Boolean);
-    const value = parseFloat(rows[rows.length - 1].split(',')[4]);
-    if (Number.isFinite(value)) row.vix = value;
-    else fetchErrors.vix = 'parsed value was not a finite number';
-  } catch (e) {
-    fetchErrors.vix = e instanceof Error ? e.message : String(e);
-  }
+  // All three run independently — a timeout or failure on one never blocks
+  // the others. Promise.allSettled (not sequential awaits) so they also run
+  // in parallel rather than one after another, keeping total time down.
+  const [vixResult, sp500Result, goldResult] = await Promise.allSettled([
+    // VIX
+    (async () => {
+      const res = await fetchWithTimeout('https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv');
+      const text = await res.text();
+      const rows = text.trim().split('\n').slice(1).filter(Boolean);
+      const value = parseFloat(rows[rows.length - 1].split(',')[4]);
+      if (!Number.isFinite(value)) throw new Error('parsed value was not a finite number');
+      return value;
+    })(),
+    // S&P 500 — FRED CSV: observation_date,SP500 (missing/holiday days show ".")
+    (async () => {
+      const res = await fetchWithTimeout('https://fred.stlouisfed.org/graph/fredgraph.csv?id=SP500');
+      const text = await res.text();
+      const rows = text.trim().split('\n').slice(1).filter(Boolean)
+        .map((r) => r.split(','))
+        .filter((r) => r[1] && r[1] !== '.' && Number.isFinite(parseFloat(r[1])))
+        .sort((a, b) => a[0].localeCompare(b[0]));
+      if (!rows.length) throw new Error('no usable rows found in FRED response');
+      return parseFloat(rows[rows.length - 1][1]);
+    })(),
+    // Gold
+    (async () => {
+      const res = await fetchWithTimeout('https://api.gold-api.com/price/XAU');
+      const json = await res.json();
+      const value = Number(json.price ?? json.price_usd ?? json.value ?? json.rate);
+      if (!Number.isFinite(value)) throw new Error(`no usable price field in response: ${JSON.stringify(json)}`);
+      return value;
+    })(),
+  ]);
 
-  // S&P 500 — FRED CSV: observation_date,SP500 (missing/holiday days show "." )
-  try {
-    const res = await fetch('https://fred.stlouisfed.org/graph/fredgraph.csv?id=SP500');
-    const text = await res.text();
-    const rows = text.trim().split('\n').slice(1).filter(Boolean)
-      .map((r) => r.split(','))
-      .filter((r) => r[1] && r[1] !== '.' && Number.isFinite(parseFloat(r[1])))
-      .sort((a, b) => a[0].localeCompare(b[0]));
-    const value = rows.length ? parseFloat(rows[rows.length - 1][1]) : NaN;
-    if (Number.isFinite(value)) row.sp500 = value;
-    else fetchErrors.sp500 = 'no usable rows found in FRED response';
-  } catch (e) {
-    fetchErrors.sp500 = e instanceof Error ? e.message : String(e);
-  }
+  if (vixResult.status === 'fulfilled') row.vix = vixResult.value;
+  else fetchErrors.vix = vixResult.reason?.name === 'AbortError' ? 'timed out after 8s' : String(vixResult.reason?.message || vixResult.reason);
 
-  // Gold
-  try {
-    const res = await fetch('https://api.gold-api.com/price/XAU');
-    const json = await res.json();
-    const value = Number(json.price ?? json.price_usd ?? json.value ?? json.rate);
-    if (Number.isFinite(value)) row.gold = value;
-    else fetchErrors.gold = `no usable price field in response: ${JSON.stringify(json)}`;
-  } catch (e) {
-    fetchErrors.gold = e instanceof Error ? e.message : String(e);
-  }
+  if (sp500Result.status === 'fulfilled') row.sp500 = sp500Result.value;
+  else fetchErrors.sp500 = sp500Result.reason?.name === 'AbortError' ? 'timed out after 8s' : String(sp500Result.reason?.message || sp500Result.reason);
+
+  if (goldResult.status === 'fulfilled') row.gold = goldResult.value;
+  else fetchErrors.gold = goldResult.reason?.name === 'AbortError' ? 'timed out after 8s' : String(goldResult.reason?.message || goldResult.reason);
 
   if (row.vix === undefined && row.gold === undefined && row.sp500 === undefined) {
     return new Response(JSON.stringify({ logged: false, reason: 'all fetches failed', fetchErrors }), {

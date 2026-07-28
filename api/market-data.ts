@@ -1,10 +1,14 @@
 // Vercel Edge Function: /api/market-data
-// Proxies VIX (CBOE) and S&P 500 (Stooq) — both block direct browser
-// requests (no CORS headers), confirmed by testing. Gold's current value now
-// also comes from here (our own daily-logged history), rather than a
-// separate live fetch — this makes all three indicators behave consistently
-// as "yesterday's close" (VIX/S&P only ever publish once daily anyway, so
-// this brings Gold in line rather than mixing live-price with EOD figures).
+// Proxies VIX (CBOE) — blocks direct browser requests (no CORS headers),
+// confirmed by testing. S&P 500 and Gold's current values both come from
+// our own daily-logged history (market_history table) rather than a live
+// third-party fetch — S&P 500 was originally attempted via Stooq (two
+// different symbols tried) but both silently failed in production, since
+// Stooq blocks automated/server-side requests. The data is now sourced via
+// FRED in log-market-history.ts instead, and read from history here.
+//
+// This makes all three indicators behave consistently as "yesterday's
+// close" (VIX only ever publishes once daily anyway).
 //
 // Also returns:
 //   - the last 30 days of history from the shared market_history table
@@ -24,6 +28,17 @@
 export const config = { runtime: 'edge' };
 
 const HISTORY_DAYS = 30;
+const FETCH_TIMEOUT_MS = 8000;
+
+async function fetchWithTimeout(url: string, timeoutMs = FETCH_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 type Indicator = { value: number; up: boolean; streak: number };
 
@@ -78,7 +93,7 @@ export default async function handler(): Promise<Response> {
   // VIX — live CBOE fetch for the freshest possible current value (still
   // only ever an EOD close, since that's all CBOE publishes).
   try {
-    const res = await fetch('https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv');
+    const res = await fetchWithTimeout('https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv');
     const text = await res.text();
     const rows = text.trim().split('\n').slice(1).filter(Boolean);
     const parseClose = (row: string) => parseFloat(row.split(',')[4]);
