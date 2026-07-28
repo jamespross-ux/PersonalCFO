@@ -1,8 +1,8 @@
 // Vercel Edge Function: /api/log-market-history
 // Triggered once a day by Vercel Cron (see vercel.json). Fetches VIX,
-// put/call ratio, and gold price, then upserts today's values into the
-// shared market_history table so the CFO chat can reference a genuine
-// multi-day trend, not just today's snapshot.
+// S&P 500, and gold price, then upserts today's values into the shared
+// market_history table so the CFO chat can reference a genuine multi-day
+// trend, not just today's snapshot.
 //
 // Upserts by date (on_conflict=date), so if this ever runs twice in one day
 // (e.g. a manual test trigger), it safely overwrites today's row rather
@@ -30,7 +30,7 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   const today = new Date().toISOString().slice(0, 10);
-  const row: { date: string; vix?: number; gold?: number; put_call?: number } = { date: today };
+  const row: { date: string; vix?: number; gold?: number; sp500?: number } = { date: today };
 
   // VIX
   try {
@@ -41,17 +41,14 @@ export default async function handler(req: Request): Promise<Response> {
     if (Number.isFinite(value)) row.vix = value;
   } catch (e) { /* omit */ }
 
-  // Put/Call ratio
+  // S&P 500 — Stooq daily CSV
   try {
-    const res = await fetch('https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/indexpcarchive.csv');
+    const res = await fetch('https://stooq.com/q/d/l/?s=%5Espx&i=d');
     const text = await res.text();
-    const lines = text.trim().split('\n');
-    const headerIdx = lines.findIndex((l) => l.startsWith('Trade_date'));
-    if (headerIdx >= 0) {
-      const rows = lines.slice(headerIdx + 1).filter(Boolean);
-      const value = parseFloat(rows[rows.length - 1].split(',')[4]);
-      if (Number.isFinite(value)) row.put_call = value;
-    }
+    const rows = text.trim().split('\n').slice(1).filter(Boolean)
+      .sort((a, b) => a.split(',')[0].localeCompare(b.split(',')[0]));
+    const value = parseFloat(rows[rows.length - 1].split(',')[4]);
+    if (Number.isFinite(value)) row.sp500 = value;
   } catch (e) { /* omit */ }
 
   // Gold
@@ -62,8 +59,7 @@ export default async function handler(req: Request): Promise<Response> {
     if (Number.isFinite(value)) row.gold = value;
   } catch (e) { /* omit */ }
 
-  // If every single fetch failed, don't write an empty row.
-  if (row.vix === undefined && row.gold === undefined && row.put_call === undefined) {
+  if (row.vix === undefined && row.gold === undefined && row.sp500 === undefined) {
     return new Response(JSON.stringify({ logged: false, reason: 'all fetches failed' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
