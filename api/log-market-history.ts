@@ -8,6 +8,12 @@
 // (e.g. a manual test trigger), it safely overwrites today's row rather
 // than creating a duplicate.
 //
+// IMPORTANT: this now returns a non-200 status if the database write
+// actually fails, with Supabase's real error message included. Previously
+// this always returned 200 regardless of whether the write succeeded,
+// which made a real failure look identical to a success in Vercel's log
+// view unless you dug into the response body specifically.
+//
 // Set these in Vercel Project Settings -> Environment Variables:
 //   SUPABASE_URL              (already set for chat.ts / check-inactive.ts)
 //   SUPABASE_SERVICE_ROLE_KEY (already set for chat.ts / check-inactive.ts)
@@ -31,6 +37,7 @@ export default async function handler(req: Request): Promise<Response> {
 
   const today = new Date().toISOString().slice(0, 10);
   const row: { date: string; vix?: number; gold?: number; sp500?: number } = { date: today };
+  const fetchErrors: Record<string, string> = {};
 
   // VIX
   try {
@@ -39,7 +46,10 @@ export default async function handler(req: Request): Promise<Response> {
     const rows = text.trim().split('\n').slice(1).filter(Boolean);
     const value = parseFloat(rows[rows.length - 1].split(',')[4]);
     if (Number.isFinite(value)) row.vix = value;
-  } catch (e) { /* omit */ }
+    else fetchErrors.vix = 'parsed value was not a finite number';
+  } catch (e) {
+    fetchErrors.vix = e instanceof Error ? e.message : String(e);
+  }
 
   // S&P 500 — Stooq daily CSV
   try {
@@ -49,7 +59,10 @@ export default async function handler(req: Request): Promise<Response> {
       .sort((a, b) => a.split(',')[0].localeCompare(b.split(',')[0]));
     const value = parseFloat(rows[rows.length - 1].split(',')[4]);
     if (Number.isFinite(value)) row.sp500 = value;
-  } catch (e) { /* omit */ }
+    else fetchErrors.sp500 = 'parsed value was not a finite number';
+  } catch (e) {
+    fetchErrors.sp500 = e instanceof Error ? e.message : String(e);
+  }
 
   // Gold
   try {
@@ -57,11 +70,14 @@ export default async function handler(req: Request): Promise<Response> {
     const json = await res.json();
     const value = Number(json.price ?? json.price_usd ?? json.value ?? json.rate);
     if (Number.isFinite(value)) row.gold = value;
-  } catch (e) { /* omit */ }
+    else fetchErrors.gold = `no usable price field in response: ${JSON.stringify(json)}`;
+  } catch (e) {
+    fetchErrors.gold = e instanceof Error ? e.message : String(e);
+  }
 
   if (row.vix === undefined && row.gold === undefined && row.sp500 === undefined) {
-    return new Response(JSON.stringify({ logged: false, reason: 'all fetches failed' }), {
-      status: 200,
+    return new Response(JSON.stringify({ logged: false, reason: 'all fetches failed', fetchErrors }), {
+      status: 502,
       headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -72,12 +88,21 @@ export default async function handler(req: Request): Promise<Response> {
       apikey: serviceKey,
       Authorization: `Bearer ${serviceKey}`,
       'Content-Type': 'application/json',
-      Prefer: 'resolution=merge-duplicates,return=minimal',
+      Prefer: 'resolution=merge-duplicates,return=representation',
     },
     body: JSON.stringify(row),
   });
 
-  return new Response(JSON.stringify({ logged: upsertRes.ok, row }), {
+  if (!upsertRes.ok) {
+    const supabaseError = await upsertRes.text();
+    return new Response(
+      JSON.stringify({ logged: false, attempted: row, fetchErrors, supabaseStatus: upsertRes.status, supabaseError }),
+      { status: 502, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+
+  const saved = await upsertRes.json();
+  return new Response(JSON.stringify({ logged: true, saved, fetchErrors }), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
   });

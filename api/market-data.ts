@@ -89,9 +89,11 @@ export default async function handler(): Promise<Response> {
     }
   } catch (e) { /* omit */ }
 
-  // S&P 500 — live Stooq fetch, same reasoning as VIX.
+  // S&P 500 — via the SPY ETF (tracks the S&P 500 essentially 1:1), not the
+  // raw index symbol. The raw index symbol was silently failing on Stooq's
+  // download endpoint; SPY is a much more reliably supported symbol there.
   try {
-    const res = await fetch('https://stooq.com/q/d/l/?s=%5Espx&i=d');
+    const res = await fetch('https://stooq.com/q/d/l/?s=spy.us&i=d');
     const text = await res.text();
     const rows = text.trim().split('\n').slice(1).filter(Boolean)
       .sort((a, b) => a.split(',')[0].localeCompare(b.split(',')[0]));
