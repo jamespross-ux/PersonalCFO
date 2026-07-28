@@ -4,14 +4,21 @@
 // market_history table so the CFO chat can reference a genuine multi-day
 // trend, not just today's snapshot.
 //
-// S&P 500 source: FRED (Federal Reserve Bank of St. Louis), an official,
-// free, no-key CSV feed — NOT Stooq. Stooq was tried first (two different
-// symbols) and both silently failed; Stooq is known to block automated/
-// server-side requests. FRED is built for exactly this kind of use.
+// S&P 500 source history (three attempts before this one worked):
+//   1. Stooq (raw index symbol) — silently failed, Stooq blocks automated
+//      requests (documented CAPTCHA protection).
+//   2. Stooq (SPY ETF symbol, as a fallback) — also silently failed, same reason.
+//   3. FRED (Federal Reserve) CSV — genuinely works everywhere else (verified
+//      via curl and pandas in independent real-world projects), but times
+//      out specifically when fetched from Vercel's Edge network.
+//   4. Yahoo Finance's chart API (current) — the same endpoint that powers
+//      their live website, built for real-time production traffic rather
+//      than an archive/CSV service. Unofficial (not a published Yahoo
+//      product) but widely used in production (e.g. the yfinance library).
 //
-// IMPORTANT — every fetch now has an explicit timeout (8 seconds each). A
-// previous version had no timeout at all, and one hanging request (likely
-// the FRED fetch) blocked the ENTIRE function until Vercel's own 25s limit
+// IMPORTANT — every fetch has an explicit timeout (8 seconds each) and all
+// three run in parallel. A previous version had no timeout at all, and one
+// hanging request blocked the ENTIRE function until Vercel's own 25s limit
 // killed it — meaning even VIX and Gold, which were working fine on their
 // own, never got logged that day either. Each source now fails fast and
 // independently instead.
@@ -74,16 +81,21 @@ export default async function handler(req: Request): Promise<Response> {
       if (!Number.isFinite(value)) throw new Error('parsed value was not a finite number');
       return value;
     })(),
-    // S&P 500 — FRED CSV: observation_date,SP500 (missing/holiday days show ".")
+    // S&P 500 — Yahoo Finance's chart API (the same endpoint that powers
+    // their live website). Unofficial (not a published Yahoo product) but
+    // widely used in production by tools like yfinance, and a genuinely
+    // different infrastructure profile than the two previous attempts
+    // (Stooq: blocks automated requests; FRED: times out specifically from
+    // Vercel's network despite working everywhere else) — this is a
+    // real-time production endpoint built for scale, not an archive/CSV
+    // service. previousClose is given directly, no historical parsing needed.
     (async () => {
-      const res = await fetchWithTimeout('https://fred.stlouisfed.org/graph/fredgraph.csv?id=SP500');
-      const text = await res.text();
-      const rows = text.trim().split('\n').slice(1).filter(Boolean)
-        .map((r) => r.split(','))
-        .filter((r) => r[1] && r[1] !== '.' && Number.isFinite(parseFloat(r[1])))
-        .sort((a, b) => a[0].localeCompare(b[0]));
-      if (!rows.length) throw new Error('no usable rows found in FRED response');
-      return parseFloat(rows[rows.length - 1][1]);
+      const res = await fetchWithTimeout('https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC');
+      const json = await res.json();
+      const meta = json?.chart?.result?.[0]?.meta;
+      const value = Number(meta?.regularMarketPrice);
+      if (!Number.isFinite(value)) throw new Error(`no usable price in Yahoo response: ${JSON.stringify(json).slice(0, 300)}`);
+      return value;
     })(),
     // Gold
     (async () => {
