@@ -104,6 +104,11 @@ export default async function handler(req: Request): Promise<Response> {
   if (goldResult.status === 'fulfilled') row.gold = goldResult.value;
   else fetchErrors.gold = goldResult.reason?.name === 'AbortError' ? 'timed out after 8s' : String(goldResult.reason?.message || goldResult.reason);
 
+  // Printed here (in addition to being in the JSON response) specifically so
+  // this shows up directly in Vercel's Logs tab as plain readable text —
+  // easier to find than digging through a response-body viewer.
+  console.log('log-market-history result:', JSON.stringify({ row, fetchErrors }));
+
   if (row.vix === undefined && row.gold === undefined && row.sp500 === undefined) {
     return new Response(JSON.stringify({ logged: false, reason: 'all fetches failed', fetchErrors }), {
       status: 502,
@@ -124,6 +129,7 @@ export default async function handler(req: Request): Promise<Response> {
 
   if (!upsertRes.ok) {
     const supabaseError = await upsertRes.text();
+    console.log('log-market-history Supabase write FAILED:', upsertRes.status, supabaseError);
     return new Response(
       JSON.stringify({ logged: false, attempted: row, fetchErrors, supabaseStatus: upsertRes.status, supabaseError }),
       { status: 502, headers: { 'Content-Type': 'application/json' } }
@@ -131,6 +137,7 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   const saved = await upsertRes.json();
+  console.log('log-market-history Supabase write SUCCEEDED:', JSON.stringify(saved));
   return new Response(JSON.stringify({ logged: true, saved, fetchErrors }), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
