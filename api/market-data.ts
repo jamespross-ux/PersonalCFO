@@ -89,18 +89,19 @@ export default async function handler(): Promise<Response> {
     }
   } catch (e) { /* omit */ }
 
-  // S&P 500 — via the SPY ETF (tracks the S&P 500 essentially 1:1), not the
-  // raw index symbol. The raw index symbol was silently failing on Stooq's
-  // download endpoint; SPY is a much more reliably supported symbol there.
+  // S&P 500 — sourced from our own logged history (FRED-backed, see
+  // log-market-history.ts), same pattern as gold below. Two different
+  // Stooq-based approaches were tried here first (the raw index symbol,
+  // then the SPY ETF as a fallback) and both failed silently in production —
+  // Stooq is known to block automated/server-side requests. FRED is a
+  // reliable official source built for exactly this kind of use, so both
+  // Gold and S&P now read from our own daily-logged history rather than a
+  // live third-party fetch that's proven unreliable.
   try {
-    const res = await fetch('https://stooq.com/q/d/l/?s=spy.us&i=d');
-    const text = await res.text();
-    const rows = text.trim().split('\n').slice(1).filter(Boolean)
-      .sort((a, b) => a.split(',')[0].localeCompare(b.split(',')[0]));
-    const parseClose = (row: string) => parseFloat(row.split(',')[4]);
-    const last = parseClose(rows[rows.length - 1]);
-    const prev = parseClose(rows[rows.length - 2]);
-    if (Number.isFinite(last) && Number.isFinite(prev)) {
+    const spVals = history.map((h) => h.sp500).filter((v): v is number => v !== null && v !== undefined);
+    if (spVals.length >= 2) {
+      const last = spVals[spVals.length - 1];
+      const prev = spVals[spVals.length - 2];
       result.sp500 = { value: last, up: last > prev, streak: streakFor('sp500') };
     }
   } catch (e) { /* omit */ }
