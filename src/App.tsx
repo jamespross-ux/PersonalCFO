@@ -498,19 +498,20 @@ function buildSystemPrompt(data, marketData) {
     lines.push(`When asked about this chart, be direct about its limits: it assumes steady, uninterrupted growth in income, spending, and markets, which real life rarely delivers — job changes, market drawdowns, one-off expenses, or life events (a move, a career gap) would all knock it off track. A large share of the total may be illiquid (property/pension) — it's growing at an assumed 5%/year in this projection, but that's a single blended guess covering very different assets (e.g. property price growth vs invested pension returns), so it's worth pointing out if the user's illiquid mix is heavily weighted one way. It's a planning estimate, not a forecast or guarantee. If the user's situation includes anything you already know that would materially affect this (e.g. a known income gap, a big planned expense), point that out specifically rather than giving a generic disclaimer.`);
   }
 
-  // Market context — VIX, gold, put/call ratio, shown as small chips in the
+  // Market context — VIX, gold, S&P 500, shown as small chips in the
   // dashboard header. Shared across all users (public market data, not
   // personal), logged once daily by a background job. Gives the CFO a real
   // multi-day trend to reference, not just today's snapshot.
-  const hasCurrentMarketData = marketData && (marketData.vix || marketData.gold || marketData.putCall);
+  const hasCurrentMarketData = marketData && (marketData.vix || marketData.gold || marketData.sp500);
   const hasHistory = marketData && marketData.history && marketData.history.length > 0;
   if (hasCurrentMarketData || hasHistory) {
     lines.push('');
     lines.push('=== MARKET CONTEXT (dashboard header chips, shared across all users) ===');
-    lines.push(`This is general market data, not personalised to the user, shown as three small indicators in the dashboard header: VIX (volatility/fear index), gold spot price (USD), and the CBOE put/call ratio (options sentiment). Each is logged once daily.`);
-    if (marketData.vix) lines.push(`VIX right now: ${marketData.vix.value.toFixed(1)}, ${marketData.vix.up ? 'up' : 'down'} vs the previous close.`);
-    if (marketData.gold) lines.push(`Gold right now: $${Math.round(marketData.gold.value).toLocaleString()}, live spot price.`);
-    if (marketData.putCall) lines.push(`Put/call ratio right now: ${marketData.putCall.value.toFixed(2)}, ${marketData.putCall.up ? 'up' : 'down'} vs the previous session.`);
+    lines.push(`This is general market data, not personalised to the user, shown as three small indicators in the dashboard header: VIX (volatility/fear index), gold spot price (USD), and the S&P 500 index. Each is logged once daily.`);
+    const streakNote = (s) => (s && s.streak >= 2 ? ` (${s.streak} consecutive ${s.up ? 'up' : 'down'} days)` : '');
+    if (marketData.vix) lines.push(`VIX right now: ${marketData.vix.value.toFixed(1)}, ${marketData.vix.up ? 'up' : 'down'} vs the previous close${streakNote(marketData.vix)}.`);
+    if (marketData.gold) lines.push(`Gold right now: $${Math.round(marketData.gold.value).toLocaleString()} (yesterday's close), ${marketData.gold.up ? 'up' : 'down'} vs the day before${streakNote(marketData.gold)}.`);
+    if (marketData.sp500) lines.push(`S&P 500 right now: ${Math.round(marketData.sp500.value).toLocaleString()}, ${marketData.sp500.up ? 'up' : 'down'} vs the previous close${streakNote(marketData.sp500)}.`);
 
     if (hasHistory) {
       const h = marketData.history;
@@ -524,10 +525,10 @@ function buildSystemPrompt(data, marketData) {
       };
       const vixTrend = trendFor('vix');
       const goldTrend = trendFor('gold');
-      const pcTrend = trendFor('put_call');
+      const spTrend = trendFor('sp500');
       if (vixTrend) lines.push(`VIX trend over the last ${vixTrend.days} logged days: moved from ${vixTrend.first.toFixed(1)} to ${vixTrend.last.toFixed(1)} (${vixTrend.pctChange > 0 ? '+' : ''}${vixTrend.pctChange}%), ranging ${vixTrend.min.toFixed(1)}–${vixTrend.max.toFixed(1)}. Rising VIX = more fear/uncertainty; falling = calmer markets.`);
       if (goldTrend) lines.push(`Gold trend over the last ${goldTrend.days} logged days: moved from $${Math.round(goldTrend.first).toLocaleString()} to $${Math.round(goldTrend.last).toLocaleString()} (${goldTrend.pctChange > 0 ? '+' : ''}${goldTrend.pctChange}%), ranging $${Math.round(goldTrend.min).toLocaleString()}–$${Math.round(goldTrend.max).toLocaleString()}.`);
-      if (pcTrend) lines.push(`Put/call ratio trend over the last ${pcTrend.days} logged days: moved from ${pcTrend.first.toFixed(2)} to ${pcTrend.last.toFixed(2)} (${pcTrend.pctChange > 0 ? '+' : ''}${pcTrend.pctChange}%). Rising ratio = more bearish positioning; falling = more bullish.`);
+      if (spTrend) lines.push(`S&P 500 trend over the last ${spTrend.days} logged days: moved from ${Math.round(spTrend.first).toLocaleString()} to ${Math.round(spTrend.last).toLocaleString()} (${spTrend.pctChange > 0 ? '+' : ''}${spTrend.pctChange}%), ranging ${Math.round(spTrend.min).toLocaleString()}–${Math.round(spTrend.max).toLocaleString()}. Rising = bullish/positive market performance; falling = bearish.`);
     } else {
       lines.push(`No multi-day trend history logged yet — only today's snapshot is available so far. This will fill in day by day.`);
     }
@@ -934,71 +935,40 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.lastFxAutoRefresh, data?.disclaimerAccepted]);
 
-  // ── Market indicators (VIX, gold, put/call ratio) ──────────────────────────
+  // ── Market indicators (VIX, gold, S&P 500) ──────────────────────────────────
   // Purely decorative context in the hero header — fetched fresh on every page
-  // load (not cached like FX rates), directly from the browser, no API keys
-  // and no server proxy needed since all three sources are public/free.
-  // Deliberately fails silently and per-indicator: if any one source is
-  // unreachable, blocked, or its format has changed, that specific chip just
-  // doesn't render rather than breaking the dashboard.
+  // load via our own /api/market-data proxy, cache: 'no-store' to force a
+  // genuinely fresh fetch every time (after finding all three indicators
+  // appeared frozen for days across two separate devices, every layer of
+  // caching was removed rather than tuning a duration).
   //
-  // Colour meaning is sentiment-based, not raw direction, for VIX and the
-  // put/call ratio (a rising VIX or rising P/C ratio is bearish = red; falling
-  // is bullish = green). Gold is plain price direction (up = green, down = red)
-  // since it isn't a sentiment index.
+  // Colour meaning is sentiment-based for VIX (a rising VIX is bearish = red;
+  // falling is bullish = green). Gold and S&P 500 use plain price direction
+  // (up = green, down = red) since a rising index or gold price is
+  // straightforwardly good news, not a fear indicator.
   //
-  // Gold has no "yesterday's close" in the free live-price endpoint, so its
-  // direction is derived by comparing against the last price this browser
-  // saw (stored in localStorage) — meaning the very first load on a given
-  // device won't show a gold arrow yet, and this doesn't sync across devices.
-  const [marketData, setMarketData] = useState({ vix: null, gold: null, putCall: null, history: null });
+  // All three now behave consistently as "yesterday's close" — including
+  // Gold, which used to show a live spot price; it's now sourced from our
+  // own daily-logged history (market_history table) instead, same as VIX/S&P,
+  // so the comparison basis is the same for all three.
+  //
+  // Each indicator also carries a "streak": how many consecutive logged days
+  // it's moved in the same direction (e.g. down 3 days running).
+  const [marketData, setMarketData] = useState({ vix: null, gold: null, sp500: null, history: null });
   useEffect(() => {
     if (!data || !data.disclaimerAccepted) return;
 
     (async () => {
-      // VIX + Put/Call ratio + 30-day history — via our own /api/market-data
-      // proxy, since CBOE's CDN doesn't allow direct browser requests
-      // (confirmed: both chips silently failed to appear when fetched directly).
-      let history = null;
       try {
-        const res = await fetch('/api/market-data');
+        const res = await fetch('/api/market-data', { cache: 'no-store' });
         const json = await res.json();
-        history = json.history || null;
-        setMarketData((d) => ({
-          ...d,
-          vix: json.vix || d.vix,
-          putCall: json.putCall || d.putCall,
-          history: history || d.history,
-        }));
+        setMarketData({
+          vix: json.vix || null,
+          gold: json.gold || null,
+          sp500: json.sp500 || null,
+          history: json.history || null,
+        });
       } catch (e) { /* chips just won't show */ }
-
-      // Gold — free live price, no key, CORS-enabled so this one works fine
-      // as a direct browser fetch (confirmed live). Direction is compared
-      // against YESTERDAY'S LOGGED CLOSE from market_history (same stable
-      // "previous close" comparison VIX/P-C already use) — not against
-      // whatever price this browser happened to last see, which was noisy
-      // and could flip several times a day for no meaningful reason.
-      try {
-        const res = await fetch('https://api.gold-api.com/price/XAU');
-        const json = await res.json();
-        const price = Number(json.price ?? json.price_usd ?? json.value ?? json.rate);
-        if (Number.isFinite(price)) {
-          const today = new Date().toISOString().slice(0, 10);
-          const priorEntries = (history || []).filter((h) => h.date < today && h.gold !== null && h.gold !== undefined);
-          const yesterdayClose = priorEntries.length ? priorEntries[priorEntries.length - 1].gold : null;
-          let up = null;
-          if (yesterdayClose !== null) {
-            up = price > yesterdayClose;
-          } else {
-            // Fallback for before any history has been logged yet (e.g. the
-            // very first day) — better than no comparison at all.
-            const prevPrice = parseFloat(localStorage.getItem('hayacfo_last_gold_price'));
-            if (Number.isFinite(prevPrice)) up = price > prevPrice;
-          }
-          localStorage.setItem('hayacfo_last_gold_price', String(price));
-          setMarketData((d) => ({ ...d, gold: { value: price, up } }));
-        }
-      } catch (e) { /* chip just won't show */ }
     })();
   }, [data?.disclaimerAccepted]);
 
@@ -1903,7 +1873,7 @@ export default function App() {
               <div className="masthead-label">Your liquid net worth</div>
               <div className="masthead-hero">{fmtD(liquidNwNow)}</div>
             </div>
-            {(marketData.vix || marketData.gold || marketData.putCall) && (
+            {(marketData.vix || marketData.gold || marketData.sp500) && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
                 {marketData.vix && (
                   <div className="market-chip">
@@ -1911,7 +1881,7 @@ export default function App() {
                     <span className="market-chip-val">
                       {marketData.vix.value.toFixed(1)}{' '}
                       <span className={marketData.vix.up ? 'market-chip-bad' : 'market-chip-good'}>
-                        {marketData.vix.up ? '▲' : '▼'}
+                        {marketData.vix.up ? '▲' : '▼'}{marketData.vix.streak >= 2 ? marketData.vix.streak : ''}
                       </span>
                     </span>
                   </div>
@@ -1921,21 +1891,19 @@ export default function App() {
                     <span className="market-chip-label">GOLD</span>
                     <span className="market-chip-val">
                       ${Math.round(marketData.gold.value).toLocaleString()}{' '}
-                      {marketData.gold.up !== null && (
-                        <span className={marketData.gold.up ? 'market-chip-good' : 'market-chip-bad'}>
-                          {marketData.gold.up ? '▲' : '▼'}
-                        </span>
-                      )}
+                      <span className={marketData.gold.up ? 'market-chip-good' : 'market-chip-bad'}>
+                        {marketData.gold.up ? '▲' : '▼'}{marketData.gold.streak >= 2 ? marketData.gold.streak : ''}
+                      </span>
                     </span>
                   </div>
                 )}
-                {marketData.putCall && (
+                {marketData.sp500 && (
                   <div className="market-chip">
-                    <span className="market-chip-label">P/C</span>
+                    <span className="market-chip-label">S&amp;P</span>
                     <span className="market-chip-val">
-                      {marketData.putCall.value.toFixed(2)}{' '}
-                      <span className={marketData.putCall.up ? 'market-chip-bad' : 'market-chip-good'}>
-                        {marketData.putCall.up ? '▲' : '▼'}
+                      {Math.round(marketData.sp500.value).toLocaleString()}{' '}
+                      <span className={marketData.sp500.up ? 'market-chip-good' : 'market-chip-bad'}>
+                        {marketData.sp500.up ? '▲' : '▼'}{marketData.sp500.streak >= 2 ? marketData.sp500.streak : ''}
                       </span>
                     </span>
                   </div>
