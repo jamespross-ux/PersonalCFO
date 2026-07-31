@@ -7,7 +7,7 @@ import {
 import {
   LayoutDashboard, MessageCircle, NotebookPen, Settings2, Send, Plus, Trash2,
   ChevronDown, ChevronUp, Sparkles, Copy, Check, Paperclip, X, FileText,
-  Eye, EyeOff, LogOut, Download, Info,
+  Eye, EyeOff, LogOut, Download, Info, Crown,
 } from 'lucide-react';
 
 const supabase = createClient(
@@ -2126,9 +2126,16 @@ export default function App() {
                 <div className="card-title">Your goals</div>
                 {goals.map((g, i) => {
                   const pct = g.target > 0 ? (g.current / g.target) * 100 : 0;
-                  const barColor = pct < 30 ? '#8A93A3' : pct < 80 ? '#4A7FA8' : '#4F8C6E';
+                  const achieved = pct >= 100;
+                  const barColor = achieved ? '#C9A24A' : pct < 30 ? '#8A93A3' : pct < 80 ? '#4A7FA8' : '#4F8C6E';
                   return (
                     <div key={g.id} style={{ marginBottom: i === goals.length - 1 ? 0 : 20 }}>
+                      {achieved && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6, color: '#C9A24A' }}>
+                          <Crown size={14} />
+                          <span style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Goal achieved</span>
+                        </div>
+                      )}
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 8 }}>
                         <div>
                           <div style={{ fontSize: 13, color: '#101C2E', marginBottom: 2 }}>{g.name}</div>
