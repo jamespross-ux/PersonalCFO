@@ -20,7 +20,7 @@
 
 export const config = { runtime: 'edge' };
 
-const MONTHLY_LIMIT = 100;
+const MONTHLY_LIMIT = 200;
 const BURST_LIMIT = 20;
 const BURST_WINDOW_SECONDS = 60;
 const CHECK_TIMEOUT_MS = 2500; // how long we'll wait on Supabase before giving up and letting the message through
