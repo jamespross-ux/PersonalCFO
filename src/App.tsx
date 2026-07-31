@@ -2131,9 +2131,11 @@ export default function App() {
                   return (
                     <div key={g.id} style={{ marginBottom: i === goals.length - 1 ? 0 : 20 }}>
                       {achieved && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6, color: '#C9A24A' }}>
-                          <Crown size={14} />
-                          <span style={{ fontFamily: 'IBM Plex Mono, monospace', fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Goal achieved</span>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid #C9A24A', color: '#C9A24A', borderRadius: 14, padding: '5px 12px', fontFamily: 'IBM Plex Mono, monospace', fontSize: 10, letterSpacing: '0.06em', whiteSpace: 'nowrap' }}>
+                            <Crown size={13} />
+                            GOAL ACHIEVED
+                          </div>
                         </div>
                       )}
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 8 }}>
@@ -2141,7 +2143,7 @@ export default function App() {
                           <div style={{ fontSize: 13, color: '#101C2E', marginBottom: 2 }}>{g.name}</div>
                           <div className="mono" style={{ fontSize: 11, color: '#7A8699' }}>{fmt(g.current, baseCurrency)} of {fmt(g.target, baseCurrency)}</div>
                         </div>
-                        <div style={{ fontFamily: "'IBM Plex Serif', serif", fontWeight: 600, fontSize: 22, color: barColor }}>{Math.round(pct)}%</div>
+                        <div style={{ fontFamily: "'IBM Plex Serif', serif", fontWeight: 600, fontSize: 22, color: barColor }}>{Math.min(Math.round(pct), 100)}%</div>
                       </div>
                       <div style={{ background: '#EDE8DF', height: 10, borderRadius: 5, overflow: 'hidden' }}>
                         <div style={{ background: barColor, height: '100%', width: `${Math.min(Math.max(pct, 0), 100)}%`, borderRadius: 5 }} />
